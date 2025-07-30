@@ -22,8 +22,12 @@ COPY requirements.txt /app/
 # התקן את התלויות של Python מ-requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# *** הוספה חדשה: נסה להתקין swisseph בנפרד כדי לוודא שאין שגיאות נבלעות ***
-RUN pip install --no-cache-dir swisseph
+# *** שינוי: הסר את שורת ההתקנה הכפולה של swisseph (היא מיותרת) ***
+# RUN pip install --no-cache-dir swisseph
+
+# *** הוספה חדשה: בדוק את נתיבי הפייתון ואת קיום swisseph ***
+# זה יציג את נתיבי החיפוש של פייתון ואת תוכן תיקיית swisseph
+RUN python -c "import sys; print(sys.path); import os; print(os.listdir('/usr/local/lib/python3.11/site-packages/swisseph'))"
 
 # העתק את שאר קבצי הפרויקט לתיקיית העבודה
 COPY . /app/
