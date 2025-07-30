@@ -1,5 +1,5 @@
 # השתמש ב-Image בסיסי של Python. בחר גרסה שתואמת למה ש-Render משתמש (Python 3.13.4 במקרה שלך)
-FROM python:3.13.4-slim-bullseye
+FROM python:3.11-slim-bullseye
 
 # הגדר משתני סביבה
 ENV PYTHONUNBUFFERED 1
