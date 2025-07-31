@@ -2,3 +2,5 @@ fastapi
 uvicorn[standard]
 ephem
 python-multipart
+firebase-admin
+python-multipart
