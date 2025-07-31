@@ -31,7 +31,7 @@ except (json.JSONDecodeError, ValueError) as e:
 app = FastAPI(
     title="Astrology API",
     description="API for historical astrological calculations with Firestore support.",
-    version="0.3.2", # עדכון גרסה לתיקון הבאג
+    version="0.5.0", # עדכון גרסה לחישובי היבטים
 )
 
 # ----------------- CORS Middleware Configuration -----------------
@@ -52,9 +52,21 @@ PLANET_MAPPING = {
     "pluto": ephem.Pluto,
 }
 
-# ----------------- Pydantic Schemas (Data Models) -----------------
+ZODIAC_SIGNS = [
+    "Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
+    "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"
+]
 
-# מודל עבור נתוני הבקשה, המתאים למה שקוד ה-HTML שולח
+def get_sign_details(longitude):
+    """
+    Calculates the zodiac sign and degree within the sign from a given longitude.
+    """
+    longitude = longitude % 360
+    sign_index = int(longitude / 30)
+    degree_in_sign = longitude % 30
+    return ZODIAC_SIGNS[sign_index], degree_in_sign
+
+# ----------------- Pydantic Schemas (Data Models) -----------------
 class ConstellationSearchInput(BaseModel):
     star_name: str = Field(..., description="The name of the celestial body (e.g., 'Mars').", examples=["Mars"])
     sign_name: str = Field(..., description="The name of the zodiac sign (e.g., 'Aries').", examples=["Aries"])
@@ -90,9 +102,46 @@ class SavedSearch(BaseModel):
     search_data: ConstellationSearchOutput
     saved_at: datetime
 
+# מודלים חדשים לחישוב מפה אסטרולוגית מלאה
+class ChartInput(BaseModel):
+    date: str = Field(..., description="Date in YYYY-MM-DD format.", examples=["2023-10-27"])
+    time: str = Field(..., description="Time in HH:MM format.", examples=["14:30"])
+    latitude: float = Field(..., description="Observer's latitude.", examples=[31.7683])
+    longitude: float = Field(..., description="Observer's longitude.", examples=[35.2137])
+
+class PlanetPosition(BaseModel):
+    name: str
+    longitude: float
+    sign: str
+    degree_in_sign: float
+    is_retrograde: bool
+    house: int
+
+class HouseCusp(BaseModel):
+    house_number: int
+    longitude: float
+    sign: str
+    degree_in_sign: float
+
+# מודל חדש לייצוג היבט אסטרולוגי
+class Aspect(BaseModel):
+    planet1: str
+    planet2: str
+    type: str # e.g., "Conjunction", "Trine", "Square"
+    orb: float # The difference in degrees from the exact aspect
+    angle: float
+
+# עדכון מודל הפלט לכלול היבטים
+class FullChartOutput(BaseModel):
+    status: str = "success"
+    date_time: str
+    location: str
+    planet_positions: List[PlanetPosition]
+    house_cusps: List[HouseCusp]
+    aspects: List[Aspect] # הוספה חדשה של רשימת ההיבטים
+
 # ----------------- API Endpoints -----------------
 
-# תיקון כאן: הפונקציה מקבלת כעת אובייקט Pydantic
 @app.post("/api/constellation-search", response_model=ConstellationSearchOutput)
 async def constellation_search(input_data: ConstellationSearchInput):
     """
@@ -105,10 +154,7 @@ async def constellation_search(input_data: ConstellationSearchInput):
     if PlanetClass is None:
         raise HTTPException(status_code=400, detail=f"Invalid star name: {input_data.star_name}")
 
-    signs = [
-        "aries", "taurus", "gemini", "cancer", "leo", "virgo",
-        "libra", "scorpio", "sagittarius", "capricorn", "aquarius", "pisces"
-    ]
+    signs = [s.lower() for s in ZODIAC_SIGNS]
     if sign_name_lower not in signs:
         raise HTTPException(status_code=400, detail=f"Invalid sign name: {input_data.sign_name}")
     
@@ -128,11 +174,12 @@ async def constellation_search(input_data: ConstellationSearchInput):
         current_sign_id = int(longitude / 30)
 
         if current_sign_id == target_sign_index and last_sign_id != target_sign_index:
+            sign_name, degree_in_sign = get_sign_details(longitude)
             position_details = CelestialBodyPosition(
                 name=input_data.star_name.title(),
                 longitude=round(longitude, 4),
-                sign=input_data.sign_name.title(),
-                degree_in_sign=round(longitude % 30, 4),
+                sign=sign_name,
+                degree_in_sign=round(degree_in_sign, 4),
                 is_retrograde=(longitude < last_longitude)
             )
             found_item = ConstellationSearchResult(
@@ -181,6 +228,119 @@ async def save_search(input_data: SaveSearchInput):
         return {"status": "success", "message": "Search saved successfully", "search_id": doc_ref.id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save search: {str(e)}")
+
+def calculate_aspects(planet_positions: List[PlanetPosition]) -> List[Aspect]:
+    """
+    Calculates major aspects between all planet pairs.
+    """
+    aspects = []
+    # הגדרת היבטים וטווח אורב (orb)
+    major_aspects = {
+        "Conjunction": {"angle": 0, "orb": 8},
+        "Sextile": {"angle": 60, "orb": 6},
+        "Square": {"angle": 90, "orb": 8},
+        "Trine": {"angle": 120, "orb": 8},
+        "Opposition": {"angle": 180, "orb": 8},
+    }
+
+    num_planets = len(planet_positions)
+    for i in range(num_planets):
+        for j in range(i + 1, num_planets):
+            p1 = planet_positions[i]
+            p2 = planet_positions[j]
+
+            angle_diff = abs(p1.longitude - p2.longitude)
+            angle_diff = min(angle_diff, 360 - angle_diff)
+
+            for aspect_name, aspect_details in major_aspects.items():
+                ideal_angle = aspect_details["angle"]
+                orb = aspect_details["orb"]
+
+                if abs(angle_diff - ideal_angle) <= orb:
+                    aspects.append(Aspect(
+                        planet1=p1.name,
+                        planet2=p2.name,
+                        type=aspect_name,
+                        orb=round(abs(angle_diff - ideal_angle), 2),
+                        angle=round(angle_diff, 2)
+                    ))
+
+    return aspects
+
+@app.post("/api/get-chart", response_model=FullChartOutput)
+async def get_chart(input_data: ChartInput):
+    """
+    Calculates and returns a full astrological chart with Equal House system.
+    """
+    try:
+        # יצירת אובייקט Observer עם המיקום והזמן
+        observer = ephem.Observer()
+        observer.lat, observer.lon = str(input_data.latitude), str(input_data.longitude)
+        observer.date = f"{input_data.date} {input_data.time}"
+
+        # חישוב ה-Ascendant ונקודות נוספות
+        ascendant = observer.sidereal_asc()
+        
+        # חישוב 12 הבתים בשיטת הבתים השווים (Equal House)
+        house_cusps = []
+        for i in range(1, 13):
+            cusp_longitude = (math.degrees(ascendant) + (i-1) * 30) % 360
+            sign, degree = get_sign_details(cusp_longitude)
+            house_cusps.append(HouseCusp(
+                house_number=i,
+                longitude=round(cusp_longitude, 4),
+                sign=sign,
+                degree_in_sign=round(degree, 4)
+            ))
+
+        # חישוב מיקומי כוכבי הלכת
+        planet_positions = []
+        for name, PlanetClass in PLANET_MAPPING.items():
+            planet = PlanetClass(observer)
+            planet_lon = math.degrees(planet.ra)
+            
+            # חישוב האם הכוכב בנסיגה
+            # השוואת קו האורך הנוכחי עם קו אורך של דקה לפני
+            observer_prev = ephem.Observer()
+            observer_prev.lat, observer_prev.lon = str(input_data.latitude), str(input_data.longitude)
+            prev_datetime = datetime.fromisoformat(f"{input_data.date}T{input_data.time}") - timedelta(minutes=1)
+            observer_prev.date = prev_datetime.strftime("%Y-%m-%d %H:%M")
+            
+            planet_prev = PlanetClass(observer_prev)
+            is_retrograde = math.degrees(planet.ra) < math.degrees(planet_prev.ra)
+
+            # מציאת הבית של הכוכב
+            house_number = 1
+            for i in range(11):
+                if house_cusps[i].longitude <= planet_lon < house_cusps[i+1].longitude:
+                    house_number = i + 1
+                    break
+            else: # אם הכוכב בבית האחרון
+                if planet_lon >= house_cusps[11].longitude or planet_lon < house_cusps[0].longitude:
+                    house_number = 12
+
+            sign, degree = get_sign_details(planet_lon)
+            planet_positions.append(PlanetPosition(
+                name=name.title(),
+                longitude=round(planet_lon, 4),
+                sign=sign,
+                degree_in_sign=round(degree, 4),
+                is_retrograde=is_retrograde,
+                house=house_number
+            ))
+
+        # חישוב ההיבטים
+        aspects = calculate_aspects(planet_positions)
+
+        return FullChartOutput(
+            date_time=observer.date.strftime("%Y-%m-%d %H:%M"),
+            location=f"Lat: {input_data.latitude}, Lon: {input_data.longitude}",
+            planet_positions=planet_positions,
+            house_cusps=house_cusps,
+            aspects=aspects
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate chart: {str(e)}")
 
 @app.get("/")
 async def read_root():
