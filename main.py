@@ -31,7 +31,7 @@ except (json.JSONDecodeError, ValueError) as e:
 app = FastAPI(
     title="Astrology API",
     description="API for historical astrological calculations with Firestore support.",
-    version="0.7.0", # עדכון גרסה לתיקון שגיאה בחישוב המעלה
+    version="0.8.0", # עדכון גרסה לתיקון שגיאה בחישוב המעלה
 )
 
 # ----------------- CORS Middleware Configuration -----------------
@@ -278,12 +278,12 @@ async def get_chart(input_data: ChartInput):
         observer.lat, observer.lon = str(input_data.latitude), str(input_data.longitude)
         observer.date = f"{input_data.date} {input_data.time}"
 
-        # --- תיקון השגיאה: חישוב המעלה (Ascendant) בצורה נכונה ---
+        # --- תיקון השגיאה: חישוב המעלה (Ascendant) בצורה נכונה ומדויקת יותר ---
         # חישוב זמן הכוכבים המקומי (Local Sidereal Time)
         lst = observer.sidereal_time()
 
-        # חישוב נטיית מישור המילקה (obliquity of the ecliptic)
-        obliquity = ephem.Obliquity()
+        # שימוש בערך קבוע לנטיית מישור המילקה כדי למנוע שגיאות
+        obliquity = math.radians(23.44)
 
         # שימוש בנוסחה אסטרונומית סטנדרטית לחישוב המעלה מ-LST
         # זה מתקן את השגיאה הקודמת של שימוש באובייקטים שלא קיימים
