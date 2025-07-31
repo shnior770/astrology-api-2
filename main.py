@@ -5,12 +5,12 @@ from typing import List, Optional, Dict, Any
 from datetime import date, datetime, timedelta
 import ephem
 import math
-import json # ייבוא חדש של מודול json
-
-# ייבוא חדש לפתרון בעיית CORS ולתמיכה ב-Firestore
-from fastapi.middleware.cors import CORSMiddleware
+import json
 from firebase_admin import credentials, firestore, initialize_app
-import firebase_admin # ייבוא חדש של מודול firebase_admin
+import firebase_admin
+
+# ייבוא חדש לפתרון בעיית CORS
+from fastapi.middleware.cors import CORSMiddleware
 
 # ----------------- Firestore Initialization -----------------
 # השתמש בפרטי הקונפיגורציה המסופקים על ידי המערכת.
@@ -31,7 +31,7 @@ except (json.JSONDecodeError, ValueError) as e:
 app = FastAPI(
     title="Astrology API",
     description="API for historical astrological calculations with Firestore support.",
-    version="0.3.1",
+    version="0.3.2", # עדכון גרסה לתיקון הבאג
 )
 
 # ----------------- CORS Middleware Configuration -----------------
@@ -53,6 +53,15 @@ PLANET_MAPPING = {
 }
 
 # ----------------- Pydantic Schemas (Data Models) -----------------
+
+# מודל עבור נתוני הבקשה, המתאים למה שקוד ה-HTML שולח
+class ConstellationSearchInput(BaseModel):
+    star_name: str = Field(..., description="The name of the celestial body (e.g., 'Mars').", examples=["Mars"])
+    sign_name: str = Field(..., description="The name of the zodiac sign (e.g., 'Aries').", examples=["Aries"])
+    start_year: int = Field(..., description="The start year for the search.", examples=[1990])
+    end_year: int = Field(..., description="The end year for the search.", examples=[2000])
+    limit: int = Field(10, ge=1, le=100, description="Maximum number of results to return.")
+
 class CelestialBodyPosition(BaseModel):
     name: str
     longitude: float
@@ -83,36 +92,31 @@ class SavedSearch(BaseModel):
 
 # ----------------- API Endpoints -----------------
 
+# תיקון כאן: הפונקציה מקבלת כעת אובייקט Pydantic
 @app.post("/api/constellation-search", response_model=ConstellationSearchOutput)
-async def constellation_search(
-    star_name: str,
-    sign_name: str,
-    start_year: int,
-    end_year: int,
-    limit: int = 10,
-):
+async def constellation_search(input_data: ConstellationSearchInput):
     """
     Finds dates when a celestial body enters a specific zodiac sign.
     """
-    planet_name_lower = star_name.lower()
-    sign_name_lower = sign_name.lower()
+    planet_name_lower = input_data.star_name.lower()
+    sign_name_lower = input_data.sign_name.lower()
 
     PlanetClass = PLANET_MAPPING.get(planet_name_lower)
     if PlanetClass is None:
-        raise HTTPException(status_code=400, detail=f"Invalid star name: {star_name}")
+        raise HTTPException(status_code=400, detail=f"Invalid star name: {input_data.star_name}")
 
     signs = [
         "aries", "taurus", "gemini", "cancer", "leo", "virgo",
         "libra", "scorpio", "sagittarius", "capricorn", "aquarius", "pisces"
     ]
     if sign_name_lower not in signs:
-        raise HTTPException(status_code=400, detail=f"Invalid sign name: {sign_name}")
+        raise HTTPException(status_code=400, detail=f"Invalid sign name: {input_data.sign_name}")
     
     target_sign_index = signs.index(sign_name_lower)
     
     results_found = []
-    current_dt = datetime(start_year, 1, 1)
-    end_dt = datetime(end_year + 1, 1, 1)
+    current_dt = datetime(input_data.start_year, 1, 1)
+    end_dt = datetime(input_data.end_year + 1, 1, 1)
 
     last_sign_id = -1
     last_longitude = -1.0
@@ -125,19 +129,19 @@ async def constellation_search(
 
         if current_sign_id == target_sign_index and last_sign_id != target_sign_index:
             position_details = CelestialBodyPosition(
-                name=star_name.title(),
+                name=input_data.star_name.title(),
                 longitude=round(longitude, 4),
-                sign=sign_name.title(),
+                sign=input_data.sign_name.title(),
                 degree_in_sign=round(longitude % 30, 4),
                 is_retrograde=(longitude < last_longitude)
             )
             found_item = ConstellationSearchResult(
                 date=current_dt.date(),
-                description=f"{star_name.title()} entered {sign_name.title()}",
+                description=f"{input_data.star_name.title()} entered {input_data.sign_name.title()}",
                 celestial_bodies=[position_details]
             )
             results_found.append(found_item)
-            if len(results_found) >= limit:
+            if len(results_found) >= input_data.limit:
                 break
         
         last_sign_id = current_sign_id
@@ -154,7 +158,7 @@ async def save_search(input_data: SaveSearchInput):
     if db is None:
         raise HTTPException(status_code=500, detail="Database not initialized.")
 
-    app_id = "default-app-id" # Fallback if __app_id is not defined
+    app_id = "default-app-id"
     try:
         if '__app_id' in globals():
             app_id = __app_id
@@ -162,11 +166,9 @@ async def save_search(input_data: SaveSearchInput):
         pass
 
     try:
-        # Save to Firestore
         collection_path = f"artifacts/{app_id}/users/{input_data.user_id}/saved_searches"
         doc_ref = db.collection(collection_path).document()
         
-        # Convert Pydantic models to dictionaries for Firestore
         data_to_save = {
             "user_id": input_data.user_id,
             "search_query": input_data.search_query,
