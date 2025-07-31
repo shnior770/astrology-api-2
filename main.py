@@ -31,7 +31,7 @@ except (json.JSONDecodeError, ValueError) as e:
 app = FastAPI(
     title="Astrology API",
     description="API for historical astrological calculations with Firestore support.",
-    version="0.5.0", # עדכון גרסה לחישובי היבטים
+    version="0.6.0", # עדכון גרסה לתיקון שגיאה
 )
 
 # ----------------- CORS Middleware Configuration -----------------
@@ -278,13 +278,21 @@ async def get_chart(input_data: ChartInput):
         observer.lat, observer.lon = str(input_data.latitude), str(input_data.longitude)
         observer.date = f"{input_data.date} {input_data.time}"
 
-        # חישוב ה-Ascendant ונקודות נוספות
-        ascendant = observer.sidereal_asc()
+        # --- תיקון השגיאה כאן: חישוב המעלה (Ascendant) בצורה נכונה ---
+        # קודם כל נחשב את זמן הכוכבים המקומי (Local Sidereal Time)
+        lst_rad = observer.sidereal_time()
         
+        # עכשיו נשתמש ב-LST כדי למצוא את המיקום על גלגל המזלות של המעלה
+        # על ידי המרה של קואורדינטות משווניות לאקליפטיות
+        equator_point = ephem.Equator(lst_rad, 0)
+        ecliptic_point = ephem.Ecliptic(equator_point)
+        ascendant = math.degrees(ecliptic_point.lon)
+        # ----------------- סוף התיקון -----------------
+
         # חישוב 12 הבתים בשיטת הבתים השווים (Equal House)
         house_cusps = []
         for i in range(1, 13):
-            cusp_longitude = (math.degrees(ascendant) + (i-1) * 30) % 360
+            cusp_longitude = (ascendant + (i-1) * 30) % 360
             sign, degree = get_sign_details(cusp_longitude)
             house_cusps.append(HouseCusp(
                 house_number=i,
@@ -312,12 +320,22 @@ async def get_chart(input_data: ChartInput):
             # מציאת הבית של הכוכב
             house_number = 1
             for i in range(11):
-                if house_cusps[i].longitude <= planet_lon < house_cusps[i+1].longitude:
-                    house_number = i + 1
-                    break
+                # מציאת גבולות הבית
+                start_lon = house_cusps[i].longitude
+                end_lon = house_cusps[(i+1)%12].longitude
+                
+                # טיפול במקרה של מעבר בין 360 ל-0 מעלות
+                if start_lon <= end_lon:
+                    if start_lon <= planet_lon < end_lon:
+                        house_number = i + 1
+                        break
+                else: # המעבר חוצה את נקודת ה-0
+                    if planet_lon >= start_lon or planet_lon < end_lon:
+                        house_number = i + 1
+                        break
             else: # אם הכוכב בבית האחרון
-                if planet_lon >= house_cusps[11].longitude or planet_lon < house_cusps[0].longitude:
-                    house_number = 12
+                house_number = 12
+
 
             sign, degree = get_sign_details(planet_lon)
             planet_positions.append(PlanetPosition(
