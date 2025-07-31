@@ -31,7 +31,7 @@ except (json.JSONDecodeError, ValueError) as e:
 app = FastAPI(
     title="Astrology API",
     description="API for historical astrological calculations with Firestore support.",
-    version="0.6.0", # עדכון גרסה לתיקון שגיאה
+    version="0.7.0", # עדכון גרסה לתיקון שגיאה בחישוב המעלה
 )
 
 # ----------------- CORS Middleware Configuration -----------------
@@ -278,15 +278,20 @@ async def get_chart(input_data: ChartInput):
         observer.lat, observer.lon = str(input_data.latitude), str(input_data.longitude)
         observer.date = f"{input_data.date} {input_data.time}"
 
-        # --- תיקון השגיאה כאן: חישוב המעלה (Ascendant) בצורה נכונה ---
-        # קודם כל נחשב את זמן הכוכבים המקומי (Local Sidereal Time)
-        lst_rad = observer.sidereal_time()
+        # --- תיקון השגיאה: חישוב המעלה (Ascendant) בצורה נכונה ---
+        # חישוב זמן הכוכבים המקומי (Local Sidereal Time)
+        lst = observer.sidereal_time()
+
+        # חישוב נטיית מישור המילקה (obliquity of the ecliptic)
+        obliquity = ephem.Obliquity()
+
+        # שימוש בנוסחה אסטרונומית סטנדרטית לחישוב המעלה מ-LST
+        # זה מתקן את השגיאה הקודמת של שימוש באובייקטים שלא קיימים
+        numerator = math.sin(lst)
+        denominator = math.cos(lst) * math.cos(obliquity) + math.tan(observer.lat) * math.sin(obliquity)
+        ascendant_rad = math.atan2(numerator, denominator)
         
-        # עכשיו נשתמש ב-LST כדי למצוא את המיקום על גלגל המזלות של המעלה
-        # על ידי המרה של קואורדינטות משווניות לאקליפטיות
-        equator_point = ephem.Equator(lst_rad, 0)
-        ecliptic_point = ephem.Ecliptic(equator_point)
-        ascendant = math.degrees(ecliptic_point.lon)
+        ascendant = (math.degrees(ascendant_rad) + 360) % 360
         # ----------------- סוף התיקון -----------------
 
         # חישוב 12 הבתים בשיטת הבתים השווים (Equal House)
