@@ -3,8 +3,6 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import date, datetime, timedelta
-
-# ייבוא עבור PyEphem
 import ephem
 import math
 
@@ -12,11 +10,10 @@ import math
 app = FastAPI(
     title="Astrology API",
     description="API for historical astrological calculations.",
-    version="0.2.1", # עדכון גרסה לשימוש ב-ephem
+    version="0.2.1",
 )
 
 # ----------------- Helper Mappings -----------------
-# מפת כוכבי לכת עבור ephem
 PLANET_MAPPING = {
     "sun": ephem.Sun,
     "moon": ephem.Moon,
@@ -66,7 +63,6 @@ async def constellation_search(input_data: ConstellationSearchInput):
     if PlanetClass is None:
         raise HTTPException(status_code=400, detail=f"Invalid star name: {input_data.star_name}")
 
-    # הגדרת מזלות
     signs = [
         "aries", "taurus", "gemini", "cancer", "leo", "virgo",
         "libra", "scorpio", "sagittarius", "capricorn", "aquarius", "pisces"
@@ -84,26 +80,17 @@ async def constellation_search(input_data: ConstellationSearchInput):
     last_longitude = -1.0
 
     while current_dt < end_dt:
-        # יצירת אובייקט כוכב לכת
         planet = PlanetClass()
-        
-        # חישוב מיקום הכוכב לתאריך הנוכחי
         planet.compute(current_dt)
-
-        # המרה ממעלות מעריכיות (Decimal degrees) ל-360 מעלות
         longitude = math.degrees(planet.ra)
-
         current_sign_id = int(longitude / 30)
 
-        # בדיקה אם הכוכב נכנס למזל היעד
-        # נבדוק גם אם המעבר הוא חיובי (לא נסיגה חוזרת לאותו מזל)
         if current_sign_id == target_sign_index and last_sign_id != target_sign_index:
             position_details = CelestialBodyPosition(
                 name=input_data.star_name.title(),
                 longitude=round(longitude, 4),
                 sign=input_data.sign_name.title(),
                 degree_in_sign=round(longitude % 30, 4),
-                # חישוב נסיגה: מהירות הירח היא שלילית כשנמצא בנסיגה
                 is_retrograde=(longitude < last_longitude)
             )
 
