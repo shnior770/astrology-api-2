@@ -31,7 +31,7 @@ except (json.JSONDecodeError, ValueError) as e:
 app = FastAPI(
     title="Astrology API",
     description="API for historical astrological calculations with Firestore support.",
-    version="0.8.0", # עדכון גרסה לתיקון שגיאה בחישוב המעלה
+    version="0.9.0", # עדכון גרסה לתיקון שגיאה בפורמט התאריך
 )
 
 # ----------------- CORS Middleware Configuration -----------------
@@ -286,7 +286,6 @@ async def get_chart(input_data: ChartInput):
         obliquity = math.radians(23.44)
 
         # שימוש בנוסחה אסטרונומית סטנדרטית לחישוב המעלה מ-LST
-        # זה מתקן את השגיאה הקודמת של שימוש באובייקטים שלא קיימים
         numerator = math.sin(lst)
         denominator = math.cos(lst) * math.cos(obliquity) + math.tan(observer.lat) * math.sin(obliquity)
         ascendant_rad = math.atan2(numerator, denominator)
@@ -356,7 +355,8 @@ async def get_chart(input_data: ChartInput):
         aspects = calculate_aspects(planet_positions)
 
         return FullChartOutput(
-            date_time=observer.date.strftime("%Y-%m-%d %H:%M"),
+            # כאן היה התיקון: שימוש במחרוזות המקוריות של התאריך והשעה
+            date_time=f"{input_data.date} {input_data.time}",
             location=f"Lat: {input_data.latitude}, Lon: {input_data.longitude}",
             planet_positions=planet_positions,
             house_cusps=house_cusps,
