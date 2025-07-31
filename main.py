@@ -6,11 +6,27 @@ from datetime import date, datetime, timedelta
 import ephem
 import math
 
+# ייבוא חדש לפתרון בעיית CORS
+from fastapi.middleware.cors import CORSMiddleware
+
 # ----------------- App Definition -----------------
 app = FastAPI(
     title="Astrology API",
     description="API for historical astrological calculations.",
-    version="0.2.1",
+    version="0.2.2", # עדכון גרסה לפתרון CORS
+)
+
+# ----------------- CORS Middleware Configuration -----------------
+# הגדרת מקורות מותרים לבקשות
+# במקרה זה, אנו מאפשרים גישה מכל מקור, כדי לאפשר בדיקה מקובץ מקומי.
+origins = ["*"]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # ----------------- Helper Mappings -----------------
