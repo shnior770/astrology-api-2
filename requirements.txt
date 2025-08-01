@@ -1,6 +1,7 @@
 fastapi
-uvicorn[standard]
+uvicorn
 ephem
+pydantic
+astral
 python-multipart
-firebase-admin
-python-multipart
+pytz
