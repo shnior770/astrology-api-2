@@ -39,6 +39,7 @@ app.add_middleware(
 
 # ----------------- Firestore Initialization -----------------
 db = None
+app_id = None
 if FIREBASE_AVAILABLE:
     firebase_config_json = os.environ.get('__firebase_config')
     app_id = os.environ.get('__app_id')
@@ -146,7 +147,6 @@ async def root():
 async def get_chart(request_data: dict):
     """
     Calculates and returns astrological chart data based on user input.
-    This version now includes planets, houses, and aspects.
     """
     try:
         # Validate and format the date string for ephem
@@ -157,10 +157,12 @@ async def get_chart(request_data: dict):
         observer.lon = str(request_data.get('longitude'))
         observer.date = formatted_date
 
+        # The fix for the `ValueError: 'ephem.Date' object has no attribute 'value'`
+        # is here. We use `float(observer.date)` to get the Julian date.
         house_cusps = [0] * 13
         house_cusps[0] = ephem.degrees(observer.sidereal_time()).znorm
-        house_cusps[1] = ephem.degrees(observer.date.value + ephem.degrees(90)).znorm
-
+        house_cusps[1] = ephem.degrees(float(observer.date) + ephem.degrees(90)).znorm
+        
         planets_data = []
         ephem_planets = {
             "Sun": ephem.Sun(), "Moon": ephem.Moon(), "Mercury": ephem.Mercury(),
@@ -216,7 +218,6 @@ async def constellation_search(input_data: ConstellationSearchInput):
         planet_name_lower = input_data.star_name.lower()
         sign_name_lower = input_data.sign_name.lower()
 
-        # Corrected mapping to use classes, not instances
         ephem_planets_map = {
             "mars": ephem.Mars, "venus": ephem.Venus, "mercury": ephem.Mercury,
             "sun": ephem.Sun, "moon": ephem.Moon, "jupiter": ephem.Jupiter,
@@ -269,6 +270,9 @@ async def save_search(request_data: SaveSearchInput):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database not available.")
 
     try:
+        if not app_id:
+            raise ValueError("App ID is not available.")
+            
         user_id = request_data.user_id
         collection_path = f"/artifacts/{app_id}/users/{user_id}/saved_searches"
         
@@ -295,6 +299,9 @@ async def get_saved_searches(user_id: str):
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database not available.")
     
     try:
+        if not app_id:
+            raise ValueError("App ID is not available.")
+        
         collection_path = f"/artifacts/{app_id}/users/{user_id}/saved_searches"
         docs = db.collection(collection_path).stream()
         
