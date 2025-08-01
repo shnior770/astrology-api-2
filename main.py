@@ -73,17 +73,17 @@ async def get_chart(request_data: ChartRequest):
     """
     print("Request received for get_chart endpoint.")
     print(f"Incoming data: {request_data.model_dump_json()}")
-    
+
     try:
         # Create an observer object with the provided location data
         observer = ephem.Observer()
         observer.lat = str(request_data.latitude)
         observer.lon = str(request_data.longitude)
-        
+
         # Fix for ephem date format issue
         date_str = request_data.datetime.strftime('%Y/%m/%d %H:%M:%S')
         observer.date = date_str
-        
+
         # Calculate planet positions and other data
         chart_data = {
             "sun": {"name": "Sun", "is_retrograde": False},
@@ -114,7 +114,7 @@ async def get_chart(request_data: ChartRequest):
 
         # Calculate position for each planet and check for retrograde
         signs = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
-        
+
         for name, planet_obj in planets.items():
             planet_obj.compute(observer)
             degree = ephem.degrees(planet_obj.ra).znorm
@@ -126,28 +126,30 @@ async def get_chart(request_data: ChartRequest):
             if name in ["mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune", "pluto"]:
                 if planet_obj.ra < planets[name].ra:
                     chart_data[name]["is_retrograde"] = True
-                
+
             # Check if planet is in its own sign
             # This logic needs to be expanded with more rules for rulership
             chart_data[name]["is_in_sign"] = False # placeholder
 
-        # Calculate moon phase
-        moon_phase = ephem.Moon().phase
-        chart_data["moon_phase"] = "New Moon" if 0 <= moon_phase < 15 else "Full Moon" if 15 <= moon_phase <= 25 else "Gibbous"
+        # --- FIX: Moved moon phase calculation after moon has been computed ---
+        # The ephem.Moon() object in the 'planets' dictionary has already been computed
+        # so we can use it to get the phase without a RuntimeError.
+        moon_phase_value = planets['moon'].phase
+        chart_data["moon_phase"] = "New Moon" if 0 <= moon_phase_value < 15 else "Full Moon" if 15 <= moon_phase_value <= 25 else "Gibbous"
 
         # Calculate day length and sunrise/sunset times
         city = LocationInfo(request_data.city, "Israel", "Asia/Jerusalem", request_data.latitude, request_data.longitude)
         s = sun(city.observer, date=request_data.datetime.date(), tzinfo=pytz.timezone(city.timezone))
-        
+
         sunrise_time = s['sunrise'].strftime('%H:%M:%S')
         sunset_time = s['sunset'].strftime('%H:%M:%S')
         day_length_seconds = (s['sunset'] - s['sunrise']).seconds
         day_length = str(datetime.timedelta(seconds=day_length_seconds))
-        
+
         chart_data["day_length"] = day_length
         chart_data["sunrise_time"] = sunrise_time
         chart_data["sunset_time"] = sunset_time
-        
+
         return ChartData(**chart_data)
 
     except Exception as e:
@@ -156,4 +158,3 @@ async def get_chart(request_data: ChartRequest):
         print(error_message)
         # Raise an HTTPException to return a 500 status code to the client
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_message)
-
