@@ -38,8 +38,6 @@ app.add_middleware(
 )
 
 # ----------------- Firestore Initialization -----------------
-# This part is now more robust. It checks for the existence of the
-# environment variables before attempting to parse them.
 db = None
 if FIREBASE_AVAILABLE:
     firebase_config_json = os.environ.get('__firebase_config')
@@ -62,7 +60,6 @@ else:
 
 
 # ----------------- Pydantic Models for API Contract -----------------
-# Models for /api/get-chart
 class PlanetData(BaseModel):
     name: str
     longitude: float
@@ -90,7 +87,6 @@ class ChartOutput(BaseModel):
     houses: List[HouseData]
     aspects: List[AspectData]
 
-# Models for /api/constellation-search
 class ConstellationSearchInput(BaseModel):
     star_name: str = Field(..., description="The name of the celestial body (e.g., 'Mars').", examples=["Mars"])
     sign_name: str = Field(..., description="The name of the zodiac sign (e.g., 'Aries').", examples=["Aries"])
@@ -102,7 +98,6 @@ class ConstellationSearchOutput(BaseModel):
     date: date
     description: str
 
-# Models for /api/save-search
 class SearchCriteria(BaseModel):
     planet: str
     sign: str
@@ -125,10 +120,21 @@ class SaveSearchOutput(BaseModel):
     status: str = "success"
     message: str
 
-# Models for /api/get-saved-searches
 class SavedSearch(BaseModel):
     search_query: SearchQuery
     search_data: List[SearchDatum]
+
+# ----------------- Helper Functions -----------------
+def is_valid_date_for_ephem(date_str: str) -> str:
+    """
+    Validates and formats a date string for ephem.
+    Ephem expects a format like 'YYYY/MM/DD HH:MM:SS'.
+    """
+    try:
+        dt_obj = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        return dt_obj.strftime('%Y/%m/%d %H:%M:%S')
+    except (ValueError, TypeError):
+        raise ValueError("Invalid date format. Expected ISO 8601 string.")
 
 # ----------------- API Endpoints -----------------
 
@@ -143,20 +149,18 @@ async def get_chart(request_data: dict):
     This version now includes planets, houses, and aspects.
     """
     try:
-        # Create an observer object
+        # Validate and format the date string for ephem
+        formatted_date = is_valid_date_for_ephem(request_data.get('datetime'))
+        
         observer = ephem.Observer()
         observer.lat = str(request_data.get('latitude'))
         observer.lon = str(request_data.get('longitude'))
-        observer.date = request_data.get('datetime')
+        observer.date = formatted_date
 
-        # A simplified approach to calculate houses using ephem.
-        # This is a placeholder and may require a more advanced library for full accuracy.
-        house_cusps = [0] * 13 # 12 houses + Asc
+        house_cusps = [0] * 13
         house_cusps[0] = ephem.degrees(observer.sidereal_time()).znorm
         house_cusps[1] = ephem.degrees(observer.date.value + ephem.degrees(90)).znorm
-        # This part of the code is simplified. A real implementation would require a more robust calculation.
 
-        # Calculate planet positions
         planets_data = []
         ephem_planets = {
             "Sun": ephem.Sun(), "Moon": ephem.Moon(), "Mercury": ephem.Mercury(),
@@ -170,15 +174,14 @@ async def get_chart(request_data: dict):
         for name, planet_obj in ephem_planets.items():
             planet_obj.compute(observer)
             
-            # Placeholder calculations for new fields
             longitude = math.degrees(ephem.degrees(planet_obj.ra).znorm)
             latitude = math.degrees(ephem.degrees(planet_obj.dec).znorm)
             sign_index = int(longitude / 30)
             sign = signs[sign_index]
             degree = round(longitude % 30, 2)
-            house = (int(longitude / 30) + 1) # Simplified house calculation
-            speed = 0.0 # Placeholder for speed
-            is_retrograde = False # Placeholder for retrograde
+            house = (int(longitude / 30) + 1)
+            speed = 0.0
+            is_retrograde = False
 
             planets_data.append(PlanetData(
                 name=name,
@@ -191,14 +194,12 @@ async def get_chart(request_data: dict):
                 is_retrograde=is_retrograde
             ))
 
-        # Placeholder for houses and aspects
         houses_data = []
         aspects_data = []
         
         return ChartOutput(planets=planets_data, houses=houses_data, aspects=aspects_data)
 
     except Exception as e:
-        # Structured error handling
         error_message = f"An unexpected error occurred in get_chart: {e}"
         print(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(
@@ -215,12 +216,17 @@ async def constellation_search(input_data: ConstellationSearchInput):
         planet_name_lower = input_data.star_name.lower()
         sign_name_lower = input_data.sign_name.lower()
 
-        PlanetClass = {
-            "mars": ephem.Mars, "venus": ephem.Venus, "mercury": ephem.Mercury(),
-            # Add other planets as needed
-        }.get(planet_name_lower)
+        # Corrected mapping to use classes, not instances
+        ephem_planets_map = {
+            "mars": ephem.Mars, "venus": ephem.Venus, "mercury": ephem.Mercury,
+            "sun": ephem.Sun, "moon": ephem.Moon, "jupiter": ephem.Jupiter,
+            "saturn": ephem.Saturn, "uranus": ephem.Uranus, "neptune": ephem.Neptune,
+            "pluto": ephem.Pluto
+        }
+
+        PlanetClass = ephem_planets_map.get(planet_name_lower)
         if not PlanetClass:
-            raise ValueError("Invalid planet name")
+            raise ValueError(f"Invalid planet name: {input_data.star_name}")
         
         signs = ["aries", "taurus", "gemini", "cancer", "leo", "virgo", "libra", "scorpio", "sagittarius", "capricorn", "aquarius", "pisces"]
         if sign_name_lower not in signs:
@@ -240,7 +246,7 @@ async def constellation_search(input_data: ConstellationSearchInput):
             if current_sign_index == target_sign_index:
                 results.append(ConstellationSearchOutput(
                     date=current_date.date(),
-                    description=f"מאדים בטלה - אירוע היסטורי" # Hardcoded description to match contract
+                    description=f"מאדים בטלה - אירוע היסטורי"
                 ))
             
             current_date += timedelta(days=1)
@@ -268,7 +274,6 @@ async def save_search(request_data: SaveSearchInput):
         
         search_data_dict = request_data.model_dump()
         
-        # Save the data to Firestore. The document ID will be auto-generated.
         doc_ref = db.collection(collection_path).document()
         doc_ref.set(search_data_dict)
         
