@@ -1,41 +1,24 @@
-# main.py
-from fastapi import FastAPI, HTTPException, Body
-from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
-from datetime import date, datetime, timedelta
+import os
 import ephem
-import math
-import json
-from firebase_admin import credentials, firestore, initialize_app
-import firebase_admin
-
-# ייבוא חדש לפתרון בעיית CORS
+import traceback
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Optional
+from astral import LocationInfo
+from astral.sun import sun
+import pytz
 
-# ----------------- Firestore Initialization -----------------
-# השתמש בפרטי הקונפיגורציה המסופקים על ידי המערכת.
-db = None
-try:
-    if '__firebase_config' in globals():
-        firebase_config = json.loads(__firebase_config)
-        cred = credentials.Certificate(firebase_config)
-        if not firebase_admin._apps:
-            initialize_app(cred)
-        db = firestore.client()
-    else:
-        print("Firebase config not found.")
-except (json.JSONDecodeError, ValueError) as e:
-    print(f"Failed to initialize Firebase with provided config: {e}")
+# Initialize FastAPI app
+app = FastAPI()
 
-# ----------------- App Definition -----------------
-app = FastAPI(
-    title="Astrology API",
-    description="API for historical astrological calculations with Firestore support.",
-    version="0.9.0", # עדכון גרסה לתיקון שגיאה בפורמט התאריך
-)
+# Add CORS middleware to allow requests from the dashboard frontend
+origins = [
+    "https://base44.app",
+    "http://localhost:5173",  # Assuming local development is on port 5173
+]
 
-# ----------------- CORS Middleware Configuration -----------------
-origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -44,339 +27,133 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ----------------- Helper Mappings -----------------
-PLANET_MAPPING = {
-    "sun": ephem.Sun, "moon": ephem.Moon, "mercury": ephem.Mercury,
-    "venus": ephem.Venus, "mars": ephem.Mars, "jupiter": ephem.Jupiter,
-    "saturn": ephem.Saturn, "uranus": ephem.Uranus, "neptune": ephem.Neptune,
-    "pluto": ephem.Pluto,
-}
 
-ZODIAC_SIGNS = [
-    "Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo",
-    "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"
-]
+# Pydantic models for request and response data validation
+class ChartRequest(BaseModel):
+    city: str
+    latitude: float
+    longitude: float
+    datetime: datetime
 
-def get_sign_details(longitude):
-    """
-    Calculates the zodiac sign and degree within the sign from a given longitude.
-    """
-    longitude = longitude % 360
-    sign_index = int(longitude / 30)
-    degree_in_sign = longitude % 30
-    return ZODIAC_SIGNS[sign_index], degree_in_sign
 
-# ----------------- Pydantic Schemas (Data Models) -----------------
-class ConstellationSearchInput(BaseModel):
-    star_name: str = Field(..., description="The name of the celestial body (e.g., 'Mars').", examples=["Mars"])
-    sign_name: str = Field(..., description="The name of the zodiac sign (e.g., 'Aries').", examples=["Aries"])
-    start_year: int = Field(..., description="The start year for the search.", examples=[1990])
-    end_year: int = Field(..., description="The end year for the search.", examples=[2000])
-    limit: int = Field(10, ge=1, le=100, description="Maximum number of results to return.")
-
-class CelestialBodyPosition(BaseModel):
+class Planet(BaseModel):
     name: str
-    longitude: float
+    degree: float
     sign: str
-    degree_in_sign: float
     is_retrograde: bool
-
-class ConstellationSearchResult(BaseModel):
-    date: date
-    description: str
-    celestial_bodies: List[CelestialBodyPosition]
-
-class ConstellationSearchOutput(BaseModel):
-    status: str = "success"
-    results: List[ConstellationSearchResult]
-
-class SaveSearchInput(BaseModel):
-    user_id: str = Field(..., description="The user ID to associate the search with.")
-    search_data: ConstellationSearchOutput = Field(..., description="The search results to save.")
-    search_query: Dict[str, Any] = Field(..., description="The original query that generated the search.")
-
-class SavedSearch(BaseModel):
-    id: str
-    user_id: str
-    search_query: Dict[str, Any]
-    search_data: ConstellationSearchOutput
-    saved_at: datetime
-
-# מודלים חדשים לחישוב מפה אסטרולוגית מלאה
-class ChartInput(BaseModel):
-    date: str = Field(..., description="Date in YYYY-MM-DD format.", examples=["2023-10-27"])
-    time: str = Field(..., description="Time in HH:MM format.", examples=["14:30"])
-    latitude: float = Field(..., description="Observer's latitude.", examples=[31.7683])
-    longitude: float = Field(..., description="Observer's longitude.", examples=[35.2137])
-
-class PlanetPosition(BaseModel):
-    name: str
-    longitude: float
-    sign: str
-    degree_in_sign: float
-    is_retrograde: bool
-    house: int
-
-class HouseCusp(BaseModel):
-    house_number: int
-    longitude: float
-    sign: str
-    degree_in_sign: float
-
-# מודל חדש לייצוג היבט אסטרולוגי
-class Aspect(BaseModel):
-    planet1: str
-    planet2: str
-    type: str # e.g., "Conjunction", "Trine", "Square"
-    orb: float # The difference in degrees from the exact aspect
-    angle: float
-
-# עדכון מודל הפלט לכלול היבטים
-class FullChartOutput(BaseModel):
-    status: str = "success"
-    date_time: str
-    location: str
-    planet_positions: List[PlanetPosition]
-    house_cusps: List[HouseCusp]
-    aspects: List[Aspect] # הוספה חדשה של רשימת ההיבטים
-
-# ----------------- API Endpoints -----------------
-
-@app.post("/api/constellation-search", response_model=ConstellationSearchOutput)
-async def constellation_search(input_data: ConstellationSearchInput):
-    """
-    Finds dates when a celestial body enters a specific zodiac sign.
-    """
-    planet_name_lower = input_data.star_name.lower()
-    sign_name_lower = input_data.sign_name.lower()
-
-    PlanetClass = PLANET_MAPPING.get(planet_name_lower)
-    if PlanetClass is None:
-        raise HTTPException(status_code=400, detail=f"Invalid star name: {input_data.star_name}")
-
-    signs = [s.lower() for s in ZODIAC_SIGNS]
-    if sign_name_lower not in signs:
-        raise HTTPException(status_code=400, detail=f"Invalid sign name: {input_data.sign_name}")
-    
-    target_sign_index = signs.index(sign_name_lower)
-    
-    results_found = []
-    current_dt = datetime(input_data.start_year, 1, 1)
-    end_dt = datetime(input_data.end_year + 1, 1, 1)
-
-    last_sign_id = -1
-    last_longitude = -1.0
-
-    while current_dt < end_dt:
-        planet = PlanetClass()
-        planet.compute(current_dt)
-        longitude = math.degrees(planet.ra)
-        current_sign_id = int(longitude / 30)
-
-        if current_sign_id == target_sign_index and last_sign_id != target_sign_index:
-            sign_name, degree_in_sign = get_sign_details(longitude)
-            position_details = CelestialBodyPosition(
-                name=input_data.star_name.title(),
-                longitude=round(longitude, 4),
-                sign=sign_name,
-                degree_in_sign=round(degree_in_sign, 4),
-                is_retrograde=(longitude < last_longitude)
-            )
-            found_item = ConstellationSearchResult(
-                date=current_dt.date(),
-                description=f"{input_data.star_name.title()} entered {input_data.sign_name.title()}",
-                celestial_bodies=[position_details]
-            )
-            results_found.append(found_item)
-            if len(results_found) >= input_data.limit:
-                break
-        
-        last_sign_id = current_sign_id
-        last_longitude = longitude
-        current_dt += timedelta(days=1)
-
-    return ConstellationSearchOutput(results=results_found)
-
-@app.post("/api/save-search")
-async def save_search(input_data: SaveSearchInput):
-    """
-    Saves a search result to Firestore.
-    """
-    if db is None:
-        raise HTTPException(status_code=500, detail="Database not initialized.")
-
-    app_id = "default-app-id"
-    try:
-        if '__app_id' in globals():
-            app_id = __app_id
-    except NameError:
-        pass
-
-    try:
-        collection_path = f"artifacts/{app_id}/users/{input_data.user_id}/saved_searches"
-        doc_ref = db.collection(collection_path).document()
-        
-        data_to_save = {
-            "user_id": input_data.user_id,
-            "search_query": input_data.search_query,
-            "search_data": input_data.search_data.dict(),
-            "saved_at": firestore.SERVER_TIMESTAMP
-        }
-        
-        doc_ref.set(data_to_save)
-        
-        return {"status": "success", "message": "Search saved successfully", "search_id": doc_ref.id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save search: {str(e)}")
-
-def calculate_aspects(planet_positions: List[PlanetPosition]) -> List[Aspect]:
-    """
-    Calculates major aspects between all planet pairs.
-    """
-    aspects = []
-    # הגדרת היבטים וטווח אורב (orb)
-    major_aspects = {
-        "Conjunction": {"angle": 0, "orb": 8},
-        "Sextile": {"angle": 60, "orb": 6},
-        "Square": {"angle": 90, "orb": 8},
-        "Trine": {"angle": 120, "orb": 8},
-        "Opposition": {"angle": 180, "orb": 8},
-    }
-
-    num_planets = len(planet_positions)
-    for i in range(num_planets):
-        for j in range(i + 1, num_planets):
-            p1 = planet_positions[i]
-            p2 = planet_positions[j]
-
-            angle_diff = abs(p1.longitude - p2.longitude)
-            angle_diff = min(angle_diff, 360 - angle_diff)
-
-            for aspect_name, aspect_details in major_aspects.items():
-                ideal_angle = aspect_details["angle"]
-                orb = aspect_details["orb"]
-
-                if abs(angle_diff - ideal_angle) <= orb:
-                    aspects.append(Aspect(
-                        planet1=p1.name,
-                        planet2=p2.name,
-                        type=aspect_name,
-                        orb=round(abs(angle_diff - ideal_angle), 2),
-                        angle=round(angle_diff, 2)
-                    ))
-
-    return aspects
-
-@app.post("/api/get-chart", response_model=FullChartOutput)
-async def get_chart(input_data: ChartInput):
-    """
-    Calculates and returns a full astrological chart with Equal House system.
-    """
-    # הדפסת הנתונים הנכנסים ליומן כדי לאפשר אבחון
-    print(f"Received request for get-chart with input data: {input_data.dict()}")
-
-    try:
-        # המרת הקלט לאובייקט datetime כדי למנוע בעיות פורמט
-        try:
-            full_datetime = datetime.fromisoformat(f"{input_data.date}T{input_data.time}")
-        except ValueError as e:
-            raise ValueError(f"Invalid date or time format in input: {e}")
-
-        # יצירת אובייקט Observer עם המיקום והזמן
-        observer = ephem.Observer()
-        observer.lat, observer.lon = str(input_data.latitude), str(input_data.longitude)
-        observer.date = full_datetime
-
-        # --- תיקון השגיאה: חישוב המעלה (Ascendant) בצורה נכונה ומדויקת יותר ---
-        # חישוב זמן הכוכבים המקומי (Local Sidereal Time)
-        lst = observer.sidereal_time()
-
-        # שימוש בערך קבוע לנטיית מישור המילקה כדי למנוע שגיאות
-        obliquity = math.radians(23.44)
-
-        # שימוש בנוסחה אסטרונומית סטנדרטית לחישוב המעלה מ-LST
-        # שימוש ב-tan במקום cos
-        numerator = math.sin(lst)
-        denominator = math.cos(lst) * math.cos(obliquity) + math.tan(observer.lat) * math.sin(obliquity)
-        ascendant_rad = math.atan2(numerator, denominator)
-        
-        ascendant = (math.degrees(ascendant_rad) + 360) % 360
-        # ----------------- סוף התיקון -----------------
-
-        # חישוב 12 הבתים בשיטת הבתים השווים (Equal House)
-        house_cusps = []
-        for i in range(1, 13):
-            cusp_longitude = (ascendant + (i-1) * 30) % 360
-            sign, degree = get_sign_details(cusp_longitude)
-            house_cusps.append(HouseCusp(
-                house_number=i,
-                longitude=round(cusp_longitude, 4),
-                sign=sign,
-                degree_in_sign=round(degree, 4)
-            ))
-
-        # חישוב מיקומי כוכבי הלכת
-        planet_positions = []
-        for name, PlanetClass in PLANET_MAPPING.items():
-            planet = PlanetClass(observer)
-            planet_lon = math.degrees(planet.ra)
-            
-            # חישוב האם הכוכב בנסיגה
-            observer_prev = ephem.Observer()
-            observer_prev.lat, observer_prev.lon = str(input_data.latitude), str(input_data.longitude)
-            prev_datetime = full_datetime - timedelta(minutes=1)
-            observer_prev.date = prev_datetime.strftime("%Y/%m/%d %H:%M") # ephem format expects slashes
-
-            planet_prev = PlanetClass(observer_prev)
-            is_retrograde = math.degrees(planet.ra) < math.degrees(planet_prev.ra)
-
-            # מציאת הבית של הכוכב
-            house_number = 1
-            for i in range(11):
-                start_lon = house_cusps[i].longitude
-                end_lon = house_cusps[(i+1)%12].longitude
-                
-                if start_lon <= end_lon:
-                    if start_lon <= planet_lon < end_lon:
-                        house_number = i + 1
-                        break
-                else: # המעבר חוצה את נקודת ה-0
-                    if planet_lon >= start_lon or planet_lon < end_lon:
-                        house_number = i + 1
-                        break
-            else: # אם הכוכב בבית האחרון
-                house_number = 12
+    is_in_sign: bool
 
 
-            sign, degree = get_sign_details(planet_lon)
-            planet_positions.append(PlanetPosition(
-                name=name.title(),
-                longitude=round(planet_lon, 4),
-                sign=sign,
-                degree_in_sign=round(degree, 4),
-                is_retrograde=is_retrograde,
-                house=house_number
-            ))
-
-        # חישוב ההיבטים
-        aspects = calculate_aspects(planet_positions)
-
-        return FullChartOutput(
-            date_time=f"{input_data.date} {input_data.time}",
-            location=f"Lat: {input_data.latitude}, Lon: {input_data.longitude}",
-            planet_positions=planet_positions,
-            house_cusps=house_cusps,
-            aspects=aspects
-        )
-    except Exception as e:
-        # הדפסת השגיאה המדויקת ליומן השרת
-        print(f"Exception in get_chart: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to generate chart: {str(e)}")
+class ChartData(BaseModel):
+    sun: Planet
+    moon: Planet
+    mercury: Planet
+    venus: Planet
+    mars: Planet
+    jupiter: Planet
+    saturn: Planet
+    uranus: Planet
+    neptune: Planet
+    pluto: Planet
+    moon_phase: str
+    day_length: str
+    sunrise_time: str
+    sunset_time: str
 
 
 @app.get("/")
-async def read_root():
+async def root():
+    return {"message": "Welcome to the Astrology API!"}
+
+
+@app.post("/api/get-chart", response_model=ChartData)
+async def get_chart(request_data: ChartRequest):
     """
-    A simple health check endpoint.
+    Calculates and returns astrological chart data based on user input.
     """
-    return {"message": "Astrology API is running"}
+    print("Request received for get_chart endpoint.")
+    print(f"Incoming data: {request_data.model_dump_json()}")
+    
+    try:
+        # Create an observer object with the provided location data
+        observer = ephem.Observer()
+        observer.lat = str(request_data.latitude)
+        observer.lon = str(request_data.longitude)
+        
+        # Fix for ephem date format issue
+        date_str = request_data.datetime.strftime('%Y/%m/%d %H:%M:%S')
+        observer.date = date_str
+        
+        # Calculate planet positions and other data
+        chart_data = {
+            "sun": {"name": "Sun", "is_retrograde": False},
+            "moon": {"name": "Moon", "is_retrograde": False},
+            "mercury": {"name": "Mercury", "is_retrograde": False},
+            "venus": {"name": "Venus", "is_retrograde": False},
+            "mars": {"name": "Mars", "is_retrograde": False},
+            "jupiter": {"name": "Jupiter", "is_retrograde": False},
+            "saturn": {"name": "Saturn", "is_retrograde": False},
+            "uranus": {"name": "Uranus", "is_retrograde": False},
+            "neptune": {"name": "Neptune", "is_retrograde": False},
+            "pluto": {"name": "Pluto", "is_retrograde": False},
+        }
+
+        # Ephem objects for calculation
+        planets = {
+            "sun": ephem.Sun(),
+            "moon": ephem.Moon(),
+            "mercury": ephem.Mercury(),
+            "venus": ephem.Venus(),
+            "mars": ephem.Mars(),
+            "jupiter": ephem.Jupiter(),
+            "saturn": ephem.Saturn(),
+            "uranus": ephem.Uranus(),
+            "neptune": ephem.Neptune(),
+            "pluto": ephem.Pluto(),
+        }
+
+        # Calculate position for each planet and check for retrograde
+        signs = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
+        
+        for name, planet_obj in planets.items():
+            planet_obj.compute(observer)
+            degree = ephem.degrees(planet_obj.ra).znorm
+            sign_index = int(degree / (ephem.pi / 6))
+            chart_data[name]["degree"] = round(degree * 180 / ephem.pi, 2)
+            chart_data[name]["sign"] = signs[sign_index]
+
+            # Check for retrograde motion
+            if name in ["mercury", "venus", "mars", "jupiter", "saturn", "uranus", "neptune", "pluto"]:
+                if planet_obj.ra < planets[name].ra:
+                    chart_data[name]["is_retrograde"] = True
+                
+            # Check if planet is in its own sign
+            # This logic needs to be expanded with more rules for rulership
+            chart_data[name]["is_in_sign"] = False # placeholder
+
+        # Calculate moon phase
+        moon_phase = ephem.Moon().phase
+        chart_data["moon_phase"] = "New Moon" if 0 <= moon_phase < 15 else "Full Moon" if 15 <= moon_phase <= 25 else "Gibbous"
+
+        # Calculate day length and sunrise/sunset times
+        city = LocationInfo(request_data.city, "Israel", "Asia/Jerusalem", request_data.latitude, request_data.longitude)
+        s = sun(city.observer, date=request_data.datetime.date(), tzinfo=pytz.timezone(city.timezone))
+        
+        sunrise_time = s['sunrise'].strftime('%H:%M:%S')
+        sunset_time = s['sunset'].strftime('%H:%M:%S')
+        day_length_seconds = (s['sunset'] - s['sunrise']).seconds
+        day_length = str(datetime.timedelta(seconds=day_length_seconds))
+        
+        chart_data["day_length"] = day_length
+        chart_data["sunrise_time"] = sunrise_time
+        chart_data["sunset_time"] = sunset_time
+        
+        return ChartData(**chart_data)
+
+    except Exception as e:
+        # Catch any exception and log it with a full traceback
+        error_message = f"An unexpected error occurred in get_chart: {e}\n{traceback.format_exc()}"
+        print(error_message)
+        # Raise an HTTPException to return a 500 status code to the client
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=error_message)
+
