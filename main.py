@@ -272,11 +272,20 @@ async def get_chart(input_data: ChartInput):
     """
     Calculates and returns a full astrological chart with Equal House system.
     """
+    # הדפסת הנתונים הנכנסים ליומן כדי לאפשר אבחון
+    print(f"Received request for get-chart with input data: {input_data.dict()}")
+
     try:
+        # המרת הקלט לאובייקט datetime כדי למנוע בעיות פורמט
+        try:
+            full_datetime = datetime.fromisoformat(f"{input_data.date}T{input_data.time}")
+        except ValueError as e:
+            raise ValueError(f"Invalid date or time format in input: {e}")
+
         # יצירת אובייקט Observer עם המיקום והזמן
         observer = ephem.Observer()
         observer.lat, observer.lon = str(input_data.latitude), str(input_data.longitude)
-        observer.date = f"{input_data.date} {input_data.time}"
+        observer.date = full_datetime
 
         # --- תיקון השגיאה: חישוב המעלה (Ascendant) בצורה נכונה ומדויקת יותר ---
         # חישוב זמן הכוכבים המקומי (Local Sidereal Time)
@@ -286,6 +295,7 @@ async def get_chart(input_data: ChartInput):
         obliquity = math.radians(23.44)
 
         # שימוש בנוסחה אסטרונומית סטנדרטית לחישוב המעלה מ-LST
+        # שימוש ב-tan במקום cos
         numerator = math.sin(lst)
         denominator = math.cos(lst) * math.cos(obliquity) + math.tan(observer.lat) * math.sin(obliquity)
         ascendant_rad = math.atan2(numerator, denominator)
@@ -312,23 +322,20 @@ async def get_chart(input_data: ChartInput):
             planet_lon = math.degrees(planet.ra)
             
             # חישוב האם הכוכב בנסיגה
-            # השוואת קו האורך הנוכחי עם קו אורך של דקה לפני
             observer_prev = ephem.Observer()
             observer_prev.lat, observer_prev.lon = str(input_data.latitude), str(input_data.longitude)
-            prev_datetime = datetime.fromisoformat(f"{input_data.date}T{input_data.time}") - timedelta(minutes=1)
-            observer_prev.date = prev_datetime.strftime("%Y-%m-%d %H:%M")
-            
+            prev_datetime = full_datetime - timedelta(minutes=1)
+            observer_prev.date = prev_datetime.strftime("%Y/%m/%d %H:%M") # ephem format expects slashes
+
             planet_prev = PlanetClass(observer_prev)
             is_retrograde = math.degrees(planet.ra) < math.degrees(planet_prev.ra)
 
             # מציאת הבית של הכוכב
             house_number = 1
             for i in range(11):
-                # מציאת גבולות הבית
                 start_lon = house_cusps[i].longitude
                 end_lon = house_cusps[(i+1)%12].longitude
                 
-                # טיפול במקרה של מעבר בין 360 ל-0 מעלות
                 if start_lon <= end_lon:
                     if start_lon <= planet_lon < end_lon:
                         house_number = i + 1
@@ -355,7 +362,6 @@ async def get_chart(input_data: ChartInput):
         aspects = calculate_aspects(planet_positions)
 
         return FullChartOutput(
-            # כאן היה התיקון: שימוש במחרוזות המקוריות של התאריך והשעה
             date_time=f"{input_data.date} {input_data.time}",
             location=f"Lat: {input_data.latitude}, Lon: {input_data.longitude}",
             planet_positions=planet_positions,
@@ -363,7 +369,10 @@ async def get_chart(input_data: ChartInput):
             aspects=aspects
         )
     except Exception as e:
+        # הדפסת השגיאה המדויקת ליומן השרת
+        print(f"Exception in get_chart: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate chart: {str(e)}")
+
 
 @app.get("/")
 async def read_root():
