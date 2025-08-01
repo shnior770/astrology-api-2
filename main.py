@@ -10,9 +10,15 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
 # Import Firestore libraries
-from firebase_admin import credentials, firestore, initialize_app
-from firebase_admin.auth import get_user, verify_id_token
-from google.cloud.firestore import Client, DocumentReference
+try:
+    from firebase_admin import credentials, firestore, initialize_app
+    from firebase_admin.auth import get_user, verify_id_token
+    from google.cloud.firestore import Client, DocumentReference
+    FIREBASE_AVAILABLE = True
+except ImportError:
+    FIREBASE_AVAILABLE = False
+    print("Firebase libraries not found. Firestore functionality will be disabled.")
+
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -32,19 +38,27 @@ app.add_middleware(
 )
 
 # ----------------- Firestore Initialization -----------------
-# This part is crucial for the new save/get endpoints.
-# The code assumes that the environment variables for Firebase are provided by the canvas.
-firebase_config = json.loads(os.environ.get('__firebase_config'))
-app_id = os.environ.get('__app_id')
-
-try:
-    cred = credentials.Certificate(firebase_config)
-    initialize_app(cred)
-    db = firestore.client()
-    print("Firestore initialized successfully.")
-except Exception as e:
-    print(f"Error initializing Firestore: {e}")
-    db = None # Set to None if initialization fails
+# This part is now more robust. It checks for the existence of the
+# environment variables before attempting to parse them.
+db = None
+if FIREBASE_AVAILABLE:
+    firebase_config_json = os.environ.get('__firebase_config')
+    app_id = os.environ.get('__app_id')
+    
+    if firebase_config_json and app_id:
+        try:
+            firebase_config = json.loads(firebase_config_json)
+            cred = credentials.Certificate(firebase_config)
+            initialize_app(cred)
+            db = firestore.client()
+            print("Firestore initialized successfully.")
+        except Exception as e:
+            print(f"Error initializing Firestore: {e}")
+            db = None
+    else:
+        print("Required Firebase environment variables not found. Firestore functionality will be disabled.")
+else:
+    print("Firebase libraries were not imported. Firestore functionality is disabled.")
 
 
 # ----------------- Pydantic Models for API Contract -----------------
