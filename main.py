@@ -177,7 +177,6 @@ async def get_chart(request_data: ChartRequest):
             # This logic needs to be expanded with more rules for rulership
             chart_data[name]["is_in_sign"] = False # placeholder
 
-        # --- FIX: Moved moon phase calculation after moon has been computed ---
         # The ephem.Moon() object in the 'planets' dictionary has already been computed
         # so we can use it to get the phase without a RuntimeError.
         moon_phase_value = planets['moon'].phase
@@ -190,7 +189,9 @@ async def get_chart(request_data: ChartRequest):
         sunrise_time = s['sunrise'].strftime('%H:%M:%S')
         sunset_time = s['sunset'].strftime('%H:%M:%S')
         day_length_seconds = (s['sunset'] - s['sunrise']).seconds
-        day_length = str(datetime.timedelta(seconds=day_length_seconds))
+        
+        # --- FIX: Changed datetime.timedelta to timedelta as it's already imported ---
+        day_length = str(timedelta(seconds=day_length_seconds))
 
         chart_data["day_length"] = day_length
         chart_data["sunrise_time"] = sunrise_time
